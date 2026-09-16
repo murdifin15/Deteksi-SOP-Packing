@@ -38,7 +38,7 @@ CONF_THRESHOLD_VIDEO = 0.25
 
 # Threshold per kelas untuk mode live
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.20,   # Seimbang: deteksi kardus responsif tanpa false-positive wajah
+    "kardus": 0.12,   # Toleran — sesuaikan berdasarkan hasil debug_detection.py
     "lakban": 0.22,   # Stabil & akurat
     "resi":   0.22,   # Stabil & akurat
 }
