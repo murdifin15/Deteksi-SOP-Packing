@@ -43,7 +43,7 @@ CONF_THRESHOLD_VIDEO = 0.25
 CONF_PER_CLASS_LIVE = {
     "kardus": 0.035,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
     "lakban": 0.24,   # Lakban nyata (0.25 - 0.90), tolak noise lipatan/tekstur kardus
-    "resi":   0.22,   # Resi nyata (0.25 - 0.85), tolak noise teks/stiker kardus
+    "resi":   0.35,   # Resi nyata (0.35 - 0.85), memblokir stiker/refleksi gulungan lakban
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -279,7 +279,8 @@ class SOPDetector:
             out = cv2.VideoWriter(save_output_path, fourcc, write_fps, (width, height))
 
         # ── Konfigurasi tracker live webcam ──
-        tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
+        # Debounce 10 frame & durasi 1.5 detik agar tahapan stabil dan terkonfirmasi nyata
+        tracker = SOPSequenceTracker(debounce_threshold=10, min_duration_seconds=1.5)
 
         # ── Persistent Box & Tracker Cache (Anti-Kedip & Responsif) ──
         PERSIST_FRAMES = 3
@@ -326,9 +327,9 @@ class SOPDetector:
                             elif cls_name == "lakban":
                                 if conf >= 0.40 or infer_streak["lakban"] >= 2:
                                     confirmed.append(d)
-                            # Resi: konfirmasi instan jika conf >= 0.40, butuh 2 siklus jika 0.22 <= conf < 0.40
+                            # Resi: konfirmasi instan jika conf >= 0.50, butuh 2 siklus jika 0.35 <= conf < 0.50
                             elif cls_name == "resi":
-                                if conf >= 0.40 or infer_streak["resi"] >= 2:
+                                if conf >= 0.50 or infer_streak["resi"] >= 2:
                                     confirmed.append(d)
 
                         with latest_dets_lock:
@@ -429,22 +430,37 @@ class SOPDetector:
                 active_cache[cls_name] = {"det": det, "last_frame": frame_idx}
 
             # Proteksi anti-menempel pada cache tampilan:
-            # 1. Jika ada lakban, buang kardus yang menempel/tumpang tindih pada lakban (< 2.8x luas lakban)
-            if "lakban" in active_cache and "kardus" in active_cache:
+            # 1. Jika ada lakban di cache:
+            if "lakban" in active_cache:
                 l_box = active_cache["lakban"]["det"][0]
-                k_box = active_cache["kardus"]["det"][0]
                 lx1, ly1, lx2, ly2 = l_box
-                kx1, ky1, kx2, ky2 = k_box
                 l_area = max((lx2 - lx1) * (ly2 - ly1), 1)
-                k_area = max((kx2 - kx1) * (ky2 - ky1), 1)
-                ix1, iy1 = max(lx1, kx1), max(ly1, ky1)
-                ix2, iy2 = min(lx2, kx2), min(ly2, ky2)
-                if ix2 > ix1 and iy2 > iy1:
-                    inter = (ix2 - ix1) * (iy2 - iy1)
-                    if (inter / l_area > 0.15 or inter / k_area > 0.20) and (k_area < 2.8 * l_area):
-                        active_cache.pop("kardus", None)
 
-            # 2. Jika ada resi, buang kardus dan lakban yang menempel/tumpang tindih pada resi
+                # a. Buang kardus yang menempel/overlap pada lakban (< 3.0x luas lakban)
+                if "kardus" in active_cache:
+                    k_box = active_cache["kardus"]["det"][0]
+                    kx1, ky1, kx2, ky2 = k_box
+                    k_area = max((kx2 - kx1) * (ky2 - ky1), 1)
+                    ix1, iy1 = max(lx1, kx1), max(ly1, ky1)
+                    ix2, iy2 = min(lx2, kx2), min(ly2, ky2)
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter = (ix2 - ix1) * (iy2 - iy1)
+                        if (inter / l_area > 0.10 or inter / k_area > 0.10) and (k_area < 3.0 * l_area):
+                            active_cache.pop("kardus", None)
+
+                # b. Buang resi yang menempel/overlap pada lakban (stiker merek pada tape roll)
+                if "resi" in active_cache:
+                    r_box = active_cache["resi"]["det"][0]
+                    rx1, ry1, rx2, ry2 = r_box
+                    r_area = max((rx2 - rx1) * (ry2 - ry1), 1)
+                    ix1, iy1 = max(lx1, rx1), max(ly1, ry1)
+                    ix2, iy2 = min(lx2, rx2), min(ly2, ry2)
+                    if ix2 > ix1 and iy2 > iy1:
+                        inter = (ix2 - ix1) * (iy2 - iy1)
+                        if inter / r_area > 0.10 or inter / l_area > 0.10:
+                            active_cache.pop("resi", None)
+
+            # 2. Jika ada resi aktif di cache:
             if "resi" in active_cache:
                 r_box = active_cache["resi"]["det"][0]
                 rx1, ry1, rx2, ry2 = r_box
@@ -458,7 +474,7 @@ class SOPDetector:
                         ix2, iy2 = min(rx2, ox2), min(ry2, oy2)
                         if ix2 > ix1 and iy2 > iy1:
                             inter = (ix2 - ix1) * (iy2 - iy1)
-                            if (inter / r_area > 0.15 or inter / o_area > 0.20) and (o_area < 2.8 * r_area):
+                            if (inter / r_area > 0.10 or inter / o_area > 0.10) and (o_area < 3.0 * r_area):
                                 active_cache.pop(other_cls, None)
 
             # Ambil deteksi aktif yang masih dalam batas persistensi

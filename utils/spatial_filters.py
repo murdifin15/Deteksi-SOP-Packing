@@ -199,91 +199,21 @@ def filter_class_size_mismatch(detections, frame_shape):
     return valid
 
 
-def suppress_conflicting_detections(detections, iou_threshold=0.35):
+def suppress_conflicting_detections(detections, iou_threshold=0.25):
     """
-    Menghilangkan deteksi ganda / konflik kelas:
-    1. Objek Spesifik Memiliki Prioritas Atas Kontainer pada Lokasi yang Sama:
-       - Jika 'lakban' dan 'kardus' tumpang tindih pada lokasi yang sama (misal roll lakban
-         ditebak juga sebagai kardus karena warnanya cokelat/ada karton core):
-         -> 'lakban' SELALU MENANG dan 'kardus' disupresi, kecuali jika ukuran kardus
-            jauh lebih besar (>= 2.8x ukuran lakban, yaitu kardus nyata yang sedang dilakban).
-       - Jika 'resi' dan 'kardus' / 'lakban' tumpang tindih pada ukuran sebanding:
-         -> 'resi' SELALU MENANG dan deteksi lain disupresi.
-    2. NMS Lintas Kelas:
-       - Jika 2 deteksi dari kelas berbeda memiliki IoU > iou_threshold (0.35),
-         pertahankan hanya yang memiliki prioritas kontekstual atau confidence tertinggi.
+    Menghilangkan deteksi ganda / konflik kelas pada objek fisik yang sama:
+    - Jika 2 deteksi dari kelas berbeda bertumpuk pada objek yang sama:
+      1. Jika satu adalah 'kardus' dan satu adalah item ('lakban' atau 'resi'),
+         dan kardus berukuran jauh lebih besar (>= 2.8x luas item):
+         -> Ini adalah item di atas kardus nyata. Keduanya sah berdampingan.
+      2. Untuk semua kasus tumpang tindih lainnya (misal: lakban vs resi pada tape roll,
+         atau kardus vs lakban pada tape roll):
+         -> Kelas dengan CONFIDENCE LEBIH TINGGI MENANG, kelas lainnya dibuang!
     """
     if len(detections) <= 1:
         return detections
 
-    CLASS_PRIORITY = {"resi": 3, "lakban": 2, "kardus": 1}
-
-    # Tahap 1: Eliminasi kardus palsu yang menempel di atas roll lakban atau resi
-    lakban_boxes = [d for d in detections if d[1] == "lakban"]
-    resi_boxes   = [d for d in detections if d[1] == "resi"]
-
-    survivors = []
-    for d in detections:
-        box, cls_name, conf = d
-        x1, y1, x2, y2 = box
-        area = max((x2 - x1) * (y2 - y1), 1)
-
-        # Cek jika d adalah kardus, apakah menempel pada lakban
-        if cls_name == "kardus":
-            is_stuck_on_lakban = False
-            for l_box, l_cls, l_conf in lakban_boxes:
-                lx1, ly1, lx2, ly2 = l_box
-                l_area = max((lx2 - lx1) * (ly2 - ly1), 1)
-                ix1, iy1 = max(x1, lx1), max(y1, ly1)
-                ix2, iy2 = min(x2, lx2), min(y2, ly2)
-                if ix2 > ix1 and iy2 > iy1:
-                    inter = (ix2 - ix1) * (iy2 - iy1)
-                    # Jika kardus menutupi lakban atau sebaliknya, dan ukuran kardus tidak jauh lebih besar (< 2.8x)
-                    if (inter / l_area > 0.15 or inter / area > 0.20) and (area < 2.8 * l_area):
-                        is_stuck_on_lakban = True
-                        break
-            if is_stuck_on_lakban:
-                continue
-
-            # Cek jika d adalah kardus, apakah menempel pada resi
-            is_stuck_on_resi = False
-            for r_box, r_cls, r_conf in resi_boxes:
-                rx1, ry1, rx2, ry2 = r_box
-                r_area = max((rx2 - rx1) * (ry2 - ry1), 1)
-                ix1, iy1 = max(x1, rx1), max(y1, ry1)
-                ix2, iy2 = min(x2, rx2), min(y2, ry2)
-                if ix2 > ix1 and iy2 > iy1:
-                    inter = (ix2 - ix1) * (iy2 - iy1)
-                    if (inter / r_area > 0.15 or inter / area > 0.20) and (area < 2.8 * r_area):
-                        is_stuck_on_resi = True
-                        break
-            if is_stuck_on_resi:
-                continue
-
-        # Cek jika d adalah lakban, apakah menempel pada resi
-        if cls_name == "lakban":
-            is_stuck_on_resi = False
-            for r_box, r_cls, r_conf in resi_boxes:
-                rx1, ry1, rx2, ry2 = r_box
-                r_area = max((rx2 - rx1) * (ry2 - ry1), 1)
-                ix1, iy1 = max(x1, rx1), max(y1, ry1)
-                ix2, iy2 = min(x2, rx2), min(y2, ry2)
-                if ix2 > ix1 and iy2 > iy1:
-                    inter = (ix2 - ix1) * (iy2 - iy1)
-                    if (inter / r_area > 0.15 or inter / area > 0.20) and (area < 2.8 * r_area):
-                        is_stuck_on_resi = True
-                        break
-            if is_stuck_on_resi:
-                continue
-
-        survivors.append(d)
-
-    # Tahap 2: NMS lintas kelas untuk box dengan IoU tinggi
-    sorted_dets = sorted(
-        survivors,
-        key=lambda d: (CLASS_PRIORITY.get(d[1], 0) * 10.0 + d[2]),
-        reverse=True
-    )
+    sorted_dets = sorted(detections, key=lambda d: d[2], reverse=True)
     kept = []
 
     for det in sorted_dets:
@@ -301,11 +231,22 @@ def suppress_conflicting_detections(detections, iou_threshold=0.35):
             ix2, iy2 = min(ax2, bx2), min(ay2, by2)
 
             if ix2 > ix1 and iy2 > iy1:
-                inter_area = (ix2 - ix1) * (iy2 - iy1)
-                union_area = area_a + area_b - inter_area
-                iou = inter_area / max(union_area, 1)
+                inter = (ix2 - ix1) * (iy2 - iy1)
+                union = area_a + area_b - inter
+                iou = inter / max(union, 1)
 
-                if iou > iou_threshold:
+                is_legit_parent_child = False
+                if cls_a == "kardus" and cls_b in ("lakban", "resi"):
+                    if area_a >= 2.8 * area_b and (inter / area_a < 0.40):
+                        is_legit_parent_child = True
+                elif cls_b == "kardus" and cls_a in ("lakban", "resi"):
+                    if area_b >= 2.8 * area_a and (inter / area_b < 0.40):
+                        is_legit_parent_child = True
+
+                if is_legit_parent_child:
+                    continue
+
+                if iou > iou_threshold or (inter / min(area_a, area_b) > 0.20) or (inter / max(area_a, area_b) > 0.15):
                     conflict = True
                     break
 
@@ -315,7 +256,7 @@ def suppress_conflicting_detections(detections, iou_threshold=0.35):
     return kept
 
 
-def suppress_overlapping_classes(detections, iou_threshold=0.35):
+def suppress_overlapping_classes(detections, iou_threshold=0.25):
     """Alias kompatibilitas untuk suppress_conflicting_detections."""
     return suppress_conflicting_detections(detections, iou_threshold=iou_threshold)
 
@@ -325,10 +266,8 @@ def apply_spatial_context(detections, step1_passed=False, step2_passed=False):
     Validasi spasial & konteks sekuensial SOP Packing:
     - Sebelum Step 1 PASSED: hanya terima 'kardus'. Tolak 'lakban' dan 'resi' (belum waktunya).
     - Sebelum Step 2 PASSED: hanya terima 'kardus' dan 'lakban'. Tolak 'resi' (belum waktunya).
-    - Setelah Step 2 PASSED: terima semua ('kardus', 'lakban', 'resi').
-    - Filter dominansi latar depan: jika item foreground (lakban/resi) terdeteksi kuat (conf >= 0.35),
-      buang deteksi sekunder yang sangat lemah (conf < 0.08) untuk mencegah false-positive kardus di background.
-    - Supresi deteksi yang berkonflik (IoU tinggi dari 2 kelas berbeda).
+    - Setelah Step 2 PASSED: terima semua, dengan eliminasi konflik spasial.
+    - Supresi deteksi yang berkonflik / tumpang tindih abnormal pada objek fisik yang sama.
     """
     if not detections:
         return []
@@ -350,18 +289,7 @@ def apply_spatial_context(detections, step1_passed=False, step2_passed=False):
     if not contextual_dets:
         return []
 
-    # 2. Foreground Dominance Filter:
-    # Saat pengguna sedang memegang/memperlihatkan lakban atau resi dengan jelas (conf >= 0.35),
-    # eliminasi deteksi objek lain yang sangat lemah / noise (conf < 0.08)
-    has_strong_foreground = any(
-        d[1] in ("lakban", "resi") and d[2] >= 0.35 for d in contextual_dets
-    )
-    if has_strong_foreground:
-        contextual_dets = [
-            d for d in contextual_dets
-            if d[2] >= 0.08 or (d[1] in ("lakban", "resi") and d[2] >= 0.30)
-        ]
-
-    # 3. Supresi konflik tumpang tindih
+    # 2. Supresi konflik tumpang tindih
     return suppress_conflicting_detections(contextual_dets)
+
 
