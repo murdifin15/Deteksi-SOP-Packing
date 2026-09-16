@@ -129,28 +129,34 @@ class SOPSequenceTracker:
                 step["end_time"]         = current_timestamp_sec
                 step["last_active_time"] = current_timestamp_sec
 
-                # Update status visual menjadi IN_PROGRESS saat sudah mulai aktif
+                # Khusus Step 1 (Kardus): instan 1 frame agar langsung terkonfirmasi saat kardus di meja
+                required_debounce = 1 if step_id == 1 else self.debounce_threshold
+                required_duration = 0.1 if step_id == 1 else self.min_duration_seconds
+
+                # Update status visual menjadi IN_PROGRESS saat mulai aktif
                 if (step["status"] == "PENDING" and
-                        step["frames_consecutive"] >= max(1, self.debounce_threshold // 3)):
+                        step["frames_consecutive"] >= 1):
                     step["status"] = "IN_PROGRESS"
 
-                # PASSED: KEDUA syarat harus terpenuhi
-                #   1. frames_consecutive >= debounce_threshold
-                #   2. total_active_duration >= min_duration_seconds
+                # PASSED: Syarat terpenuhi
                 if (step["status"] in ("PENDING", "IN_PROGRESS") and
-                        step["frames_consecutive"] >= self.debounce_threshold and
-                        step["total_active_duration"] >= self.min_duration_seconds):
+                        step["frames_consecutive"] >= required_debounce and
+                        step["total_active_duration"] >= required_duration):
                     step["status"] = "PASSED"
 
                     # Evaluasi urutan (sequence compliance check)
                     for prev_idx in range(step_id - 1):
                         prev_step = self.steps[prev_idx]
                         if prev_step["status"] in ("PENDING", "IN_PROGRESS"):
-                            prev_step["status"] = "SKIPPED"
-                            msg = (f"Pelanggaran: {prev_step['name']} dilewati "
-                                   f"(langsung ke {step['name']}).")
-                            if msg not in self.violations:
-                                self.violations.append(msg)
+                            # Jika step sebelumnya adalah Step 1 (kardus) dan pernah terdeteksi, luluskan
+                            if prev_step["id"] == 1 and prev_step["frames_active"] > 0:
+                                prev_step["status"] = "PASSED"
+                            else:
+                                prev_step["status"] = "SKIPPED"
+                                msg = (f"Pelanggaran: {prev_step['name']} dilewati "
+                                       f"(langsung ke {step['name']}).")
+                                if msg not in self.violations:
+                                    self.violations.append(msg)
 
             else:
                 # Soft-decay: kurangi frames_consecutive sebesar 1 (bukan hard-reset ke 0)
