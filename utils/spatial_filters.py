@@ -28,7 +28,8 @@ ROI_RATIO = (0.01, 0.01, 0.99, 0.99)
 BOX_MIN_AREA_RATIO = 0.0005
 
 # Rasio aspek maksimum bounding box kardus (lebar/tinggi atau tinggi/lebar)
-KARDUS_MAX_ASPECT  = 10.0
+# Dibuat sangat toleran (20.0) agar semua perspektif / lipatan kardus selalu terdeteksi
+KARDUS_MAX_ASPECT  = 20.0
 
 # Batas ukuran bounding box per kelas (min_ratio, max_ratio)
 # Dibuat toleran agar objek yang didekatkan ke kamera tetap terdeteksi dengan baik.

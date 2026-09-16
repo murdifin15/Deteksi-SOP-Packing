@@ -38,9 +38,9 @@ CONF_THRESHOLD_VIDEO = 0.25
 
 # Threshold per kelas untuk mode live
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.15,
-    "lakban": 0.20,
-    "resi":   0.20,
+    "kardus": 0.08,   # Ditingkatkan sensitivitasnya agar kardus terdeteksi instan dari berbagai sudut/pencahayaan
+    "lakban": 0.20,   # Stabil & akurat
+    "resi":   0.20,   # Stabil & akurat
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
