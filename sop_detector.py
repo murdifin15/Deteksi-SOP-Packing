@@ -39,11 +39,11 @@ from utils.spatial_filters import (
 CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live — terkalibrasi responsif & stabil:
+# Threshold per kelas untuk mode live — terkalibrasi responsif & presisi anti-halusinasi:
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.015,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
-    "lakban": 0.18,   # Lakban stabil & presisi
-    "resi":   0.10,   # Resi stabil & presisi
+    "kardus": 0.035,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
+    "lakban": 0.24,   # Lakban nyata (0.25 - 0.90), tolak noise lipatan/tekstur kardus
+    "resi":   0.22,   # Resi nyata (0.25 - 0.85), tolak noise teks/stiker kardus
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -169,28 +169,29 @@ class SOPDetector:
             other_dets  = []
             for d in detections:
                 (x1, y1, x2, y2), cls_name, conf = d
+                cx = (x1 + x2) / 2
+                cy = (y1 + y2) / 2
+
+                # 1. Anti-face filter universal: eliminasi semua objek jika centroid di area wajah
+                is_face = False
+                for fx1, fy1, fx2, fy2 in detected_faces:
+                    if (fx1 - 20 <= cx <= fx2 + 20) and (fy1 - 20 <= cy <= fy2 + 35):
+                        is_face = True
+                        break
+                if is_face:
+                    continue
+
                 if cls_name == "kardus":
                     w = max(x2 - x1, 1)
                     h = max(y2 - y1, 1)
-                    cx = (x1 + x2) / 2
-                    cy = (y1 + y2) / 2
                     area_ratio = (w * h) / frame_area
                     aspect = max(w, h) / min(w, h)
-
-                    # 1. Anti-face filter: cek overlap dengan wajah manusia yang terdeteksi
-                    is_face = False
-                    for fx1, fy1, fx2, fy2 in detected_faces:
-                        if (fx1 - 20 <= cx <= fx2 + 20) and (fy1 - 20 <= cy <= fy2 + 35):
-                            is_face = True
-                            break
-                    if is_face:
-                        continue
 
                     # 2. Anti-face filter cadangan: zona kepala atas-tengah frame
                     if is_live and (cy < 0.45 * fh and 0.22 * fw < cx < 0.78 * fw and aspect < 2.0 and area_ratio < 0.25):
                         continue
 
-                    if area_ratio >= 0.020 and aspect <= 4.5:
+                    if area_ratio >= 0.025 and aspect <= 4.0:
                         kardus_dets.append(d)
                 else:
                     other_dets.append(d)
@@ -226,22 +227,14 @@ class SOPDetector:
     # FILTER SPASIAL KONTEKSTUAL (setelah YOLO + filter dasar)
     # ──────────────────────────────────────────────────────────────────────────
 
-    def apply_contextual_filter(self, detections, step1_passed=False):
+    def apply_contextual_filter(self, detections, step1_passed=False, step2_passed=False):
         """
-        Filter lakban & resi berdasarkan konteks kehadiran kardus di frame.
-
-        - Kardus ada di frame        -> terima semua (tidak dibatasi proximity)
-        - Kardus tidak ada, step1 PASSED -> terima semua (konteks sudah terkonfirmasi)
-        - Kardus tidak ada, step1 BELUM PASSED -> tolak lakban & resi (background noise)
-
-        Args:
-            detections   : output dari detect_frame()
-            step1_passed : True jika Step 1 (kardus) sudah dikonfirmasi PASSED
-
-        Returns:
-            Filtered list of detections.
+        Filter sekuensial & spasial kontekstual SOP:
+        - Step 1 belum lulus: hanya terima kardus (lakban & resi ditolak).
+        - Step 1 lulus, Step 2 belum lulus: hanya terima kardus & lakban (resi ditolak).
+        - Step 2 lulus: terima semua (kardus, lakban, resi).
         """
-        return apply_spatial_context(detections, step1_passed=step1_passed)
+        return apply_spatial_context(detections, step1_passed=step1_passed, step2_passed=step2_passed)
 
     # ──────────────────────────────────────────────────────────────────────────
     # PROCESS WEBCAM (LIVE REAL-TIME)
@@ -289,7 +282,7 @@ class SOPDetector:
         tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
 
         # ── Persistent Box & Tracker Cache (Anti-Kedip & Responsif) ──
-        PERSIST_FRAMES = 4
+        PERSIST_FRAMES = 3
         active_cache: dict[str, dict] = {}
 
         # ── Threaded Background Inference Worker (Decoupled dari GUI Display) ──
@@ -300,6 +293,7 @@ class SOPDetector:
         latest_dets_lock  = threading.Lock()
         shared_detections = []
         worker_running    = True
+        infer_streak      = {"kardus": 0, "lakban": 0, "resi": 0}
 
         def inference_worker():
             nonlocal shared_detections
@@ -311,9 +305,34 @@ class SOPDetector:
 
                 if frame_to_process is not None:
                     try:
-                        dets = self.detect_frame(frame_to_process, is_live=True)
+                        raw_dets = self.detect_frame(frame_to_process, is_live=True)
+
+                        # ── Temporal Confirmation Filter (Eliminasi glitch / spike 1 frame) ──
+                        seen_classes = {d[1] for d in raw_dets}
+                        for c in ("kardus", "lakban", "resi"):
+                            if c in seen_classes:
+                                infer_streak[c] += 1
+                            else:
+                                infer_streak[c] = 0
+
+                        confirmed = []
+                        for d in raw_dets:
+                            box, cls_name, conf = d
+                            # Kardus: konfirmasi instan jika conf >= 0.15, butuh 2 siklus (~70ms) jika conf < 0.15
+                            if cls_name == "kardus":
+                                if conf >= 0.15 or infer_streak["kardus"] >= 2:
+                                    confirmed.append(d)
+                            # Lakban: konfirmasi instan jika conf >= 0.40, butuh 2 siklus jika 0.24 <= conf < 0.40
+                            elif cls_name == "lakban":
+                                if conf >= 0.40 or infer_streak["lakban"] >= 2:
+                                    confirmed.append(d)
+                            # Resi: konfirmasi instan jika conf >= 0.40, butuh 2 siklus jika 0.22 <= conf < 0.40
+                            elif cls_name == "resi":
+                                if conf >= 0.40 or infer_streak["resi"] >= 2:
+                                    confirmed.append(d)
+
                         with latest_dets_lock:
-                            shared_detections = dets
+                            shared_detections = confirmed
                     except Exception:
                         pass
                 time.sleep(0.005)
@@ -334,7 +353,7 @@ class SOPDetector:
         cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
         print("\n[LIVE WEBCAM BERJALAN]")
-        print("Tekan tombol 'q' atau 'ESC' pada jendela kamera untuk menghentikan pemantauan...\n")
+        print("Tekan 'r' untuk Reset SOP | Tekan 'q' atau ESC untuk Selesai\n")
 
         while cap.isOpened():
             ret, frame = cap.read()
@@ -399,7 +418,10 @@ class SOPDetector:
                 raw_detections = list(shared_detections)
 
             step1_passed = (tracker.steps[0]["status"] == "PASSED")
-            detections = self.apply_contextual_filter(raw_detections, step1_passed=step1_passed)
+            step2_passed = (tracker.steps[1]["status"] == "PASSED")
+            detections = self.apply_contextual_filter(
+                raw_detections, step1_passed=step1_passed, step2_passed=step2_passed
+            )
 
             # ── Update cache persistensi ──
             for det in detections:
@@ -410,6 +432,14 @@ class SOPDetector:
             display_detections = []
             active_classes = []
             for cls_name, item in list(active_cache.items()):
+                # Proteksi seketika: jika kelas sudah tidak diizinkan oleh sekuensial SOP, buang seketika dari cache
+                if not step1_passed and cls_name != "kardus":
+                    active_cache.pop(cls_name, None)
+                    continue
+                if not step2_passed and cls_name == "resi":
+                    active_cache.pop(cls_name, None)
+                    continue
+
                 if frame_idx - item["last_frame"] <= PERSIST_FRAMES:
                     display_detections.append(item["det"])
                     active_classes.append(cls_name)
@@ -424,9 +454,9 @@ class SOPDetector:
                 frame, display_detections, tracker, current_fps=current_fps
             )
 
-            cv2.putText(annotated_frame, "Tekan 'q' atau 'ESC' untuk Selesai",
-                        (annotated_frame.shape[1] - 360, annotated_frame.shape[0] - 20),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(annotated_frame, "Tekan 'r' Reset  |  'q' / ESC Selesai",
+                        (annotated_frame.shape[1] - 380, annotated_frame.shape[0] - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 255, 255), 1, cv2.LINE_AA)
 
             if out:
                 out.write(annotated_frame)
@@ -438,6 +468,11 @@ class SOPDetector:
             if key == ord('q') or key == 27:
                 print("[INFO] Pemantauan kamera dihentikan oleh pengguna.")
                 break
+            elif key == ord('r') or key == ord('R'):
+                print("\n[INFO] SOP Sequence Tracker di-reset.")
+                tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
+                active_cache.clear()
+                infer_streak = {"kardus": 0, "lakban": 0, "resi": 0}
 
         worker_running = False
         cap.release()
@@ -490,12 +525,15 @@ class SOPDetector:
 
             current_time_sec = frame_idx / fps
             step1_passed     = (tracker.steps[0]["status"] == "PASSED")
+            step2_passed     = (tracker.steps[1]["status"] == "PASSED")
 
             # ── Deteksi + filter dasar ──
             detections = self.detect_frame(frame, is_live=False)
 
             # ── Filter spasial kontekstual ──
-            detections = self.apply_contextual_filter(detections, step1_passed=step1_passed)
+            detections = self.apply_contextual_filter(
+                detections, step1_passed=step1_passed, step2_passed=step2_passed
+            )
 
             detected_classes = [d[1] for d in detections]
             tracker.update(detected_classes, current_time_sec)
