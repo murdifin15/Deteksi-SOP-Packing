@@ -40,9 +40,10 @@ CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
 # Threshold per kelas untuk mode live — terkalibrasi responsif & presisi anti-halusinasi:
+# Threshold per kelas untuk mode live — terkalibrasi responsif & presisi anti-halusinasi:
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.035,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
-    "lakban": 0.24,   # Lakban nyata (0.25 - 0.90), tolak noise lipatan/tekstur kardus
+    "kardus": 0.030,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
+    "lakban": 0.030,  # Responsif menangkap lakban bening / cokelat (0.03 - 0.90)
     "resi":   0.35,   # Resi nyata (0.35 - 0.85), memblokir stiker/refleksi gulungan lakban
 }
 
@@ -117,7 +118,7 @@ class SOPDetector:
         enhanced = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
         return enhanced
 
-    def detect_frame(self, frame, is_live=False):
+    def detect_frame(self, frame, is_live=False, step1_passed=False, step2_passed=False):
         """
         Jalankan YOLO inference pada satu frame.
 
@@ -181,17 +182,29 @@ class SOPDetector:
                 if is_face:
                     continue
 
-                if cls_name == "kardus":
-                    w = max(x2 - x1, 1)
-                    h = max(y2 - y1, 1)
-                    area_ratio = (w * h) / frame_area
-                    aspect = max(w, h) / min(w, h)
+                w = max(x2 - x1, 1)
+                h = max(y2 - y1, 1)
+                area_ratio = (w * h) / frame_area
+                aspect = max(w, h) / min(w, h)
 
+                # ── Khusus Step 2 (Lakban & Segel): Remap roll lakban yang disangka kardus ──
+                # Gulungan lakban bening ber-inti karton di tangan (area < 18%, aspect <= 1.6)
+                # dideteksi YOLO sebagai kardus. Remap secara cerdas menjadi 'lakban'!
+                if is_live and step1_passed and not step2_passed:
+                    if cls_name == "kardus":
+                        if 0.025 <= area_ratio < 0.18 and aspect <= 1.6:
+                            cls_name = "lakban"
+                            d = ([x1, y1, x2, y2], "lakban", conf)
+                        elif area_ratio < 0.18:
+                            continue  # Buang noise kardus kecil di Step 2
+
+                if cls_name == "kardus":
                     # 2. Anti-face filter cadangan: zona kepala atas-tengah frame
                     if is_live and (cy < 0.45 * fh and 0.22 * fw < cx < 0.78 * fw and aspect < 2.0 and area_ratio < 0.25):
                         continue
 
-                    if area_ratio >= 0.025 and aspect <= 4.0:
+                    min_area_kardus = 0.18 if (is_live and step1_passed) else 0.025
+                    if area_ratio >= min_area_kardus and aspect <= 4.0:
                         kardus_dets.append(d)
                 else:
                     other_dets.append(d)
@@ -306,7 +319,11 @@ class SOPDetector:
 
                 if frame_to_process is not None:
                     try:
-                        raw_dets = self.detect_frame(frame_to_process, is_live=True)
+                        step1_p = (tracker.steps[0]["status"] == "PASSED")
+                        step2_p = (tracker.steps[1]["status"] == "PASSED")
+                        raw_dets = self.detect_frame(
+                            frame_to_process, is_live=True, step1_passed=step1_p, step2_passed=step2_p
+                        )
 
                         # ── Temporal Confirmation Filter (Eliminasi glitch / spike 1 frame) ──
                         seen_classes = {d[1] for d in raw_dets}
@@ -323,13 +340,13 @@ class SOPDetector:
                             if cls_name == "kardus":
                                 if conf >= 0.15 or infer_streak["kardus"] >= 2:
                                     confirmed.append(d)
-                            # Lakban: konfirmasi instan jika conf >= 0.40, butuh 2 siklus jika 0.24 <= conf < 0.40
+                            # Lakban: responsif instan saat diperlihatkan
                             elif cls_name == "lakban":
-                                if conf >= 0.40 or infer_streak["lakban"] >= 2:
+                                if conf >= 0.03:
                                     confirmed.append(d)
-                            # Resi: konfirmasi instan jika conf >= 0.50, butuh 2 siklus jika 0.35 <= conf < 0.50
+                            # Resi: konfirmasi jika conf >= 0.40 atau streak >= 2
                             elif cls_name == "resi":
-                                if conf >= 0.50 or infer_streak["resi"] >= 2:
+                                if conf >= 0.40 or infer_streak["resi"] >= 2:
                                     confirmed.append(d)
 
                         with latest_dets_lock:
@@ -577,7 +594,9 @@ class SOPDetector:
             step2_passed     = (tracker.steps[1]["status"] == "PASSED")
 
             # ── Deteksi + filter dasar ──
-            detections = self.detect_frame(frame, is_live=False)
+            detections = self.detect_frame(
+                frame, is_live=False, step1_passed=step1_passed, step2_passed=step2_passed
+            )
 
             # ── Filter spasial kontekstual ──
             detections = self.apply_contextual_filter(
