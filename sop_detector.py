@@ -17,6 +17,8 @@ import threading
 import cv2
 from collections import deque
 from ultralytics import YOLO
+import torch
+torch.set_num_threads(4)
 
 from sop_tracker import SOPSequenceTracker
 from annotator import SOPAnnotator
@@ -90,6 +92,13 @@ class SOPDetector:
         except Exception as e:
             raise RuntimeError(f"[ERROR] Gagal memuat model YOLO: {e}") from e
 
+        # Inisialisasi Haar Cascade Face Classifier untuk eliminasi false-positive wajah manusia
+        try:
+            cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            self.face_cascade = cv2.CascadeClassifier(cascade_path)
+        except Exception:
+            self.face_cascade = None
+
     # ──────────────────────────────────────────────────────────────────────────
     # YOLO INFERENCE + FILTER DASAR (CONFIDENCE, SIZE, ASPECT RATIO)
     # ──────────────────────────────────────────────────────────────────────────
@@ -120,7 +129,7 @@ class SOPDetector:
 
         try:
             min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
-            imgsz = 416 if is_live else 640
+            imgsz = 320 if is_live else 640
             results = self.model(frame, imgsz=imgsz, conf=min_yolo_conf, iou=0.45, agnostic_nms=True, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -139,10 +148,22 @@ class SOPDetector:
 
                 detections.append(([x1, y1, x2, y2], cls_name, conf))
 
-            # Validasi kardus: loloskan kardus berukuran wajar (area >= 2.0% frame, aspect ratio wajar)
-            # Kardus asli di kamera user berukuran 12.6% - 25.9%, noise specks < 2.0%
             fh, fw = frame.shape[:2]
             frame_area = max(fh * fw, 1)
+
+            # Deteksi wajah cepat (20ms) pada thumbnail 160x120 untuk eliminasi deteksi wajah sebagai kardus
+            detected_faces = []
+            if is_live and self.face_cascade is not None and not self.face_cascade.empty():
+                try:
+                    gray_small = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 120))
+                    faces = self.face_cascade.detectMultiScale(gray_small, scaleFactor=1.2, minNeighbors=3, minSize=(16, 16))
+                    sx, sy = fw / 160.0, fh / 120.0
+                    detected_faces = [
+                        (int(fx * sx), int(fy * sy), int((fx + fw_b) * sx), int((fy + fh_b) * sy))
+                        for (fx, fy, fw_b, fh_b) in faces
+                    ]
+                except Exception:
+                    pass
 
             kardus_dets = []
             other_dets  = []
@@ -152,11 +173,21 @@ class SOPDetector:
                     w = max(x2 - x1, 1)
                     h = max(y2 - y1, 1)
                     cx = (x1 + x2) / 2
+                    cy = (y1 + y2) / 2
                     area_ratio = (w * h) / frame_area
                     aspect = max(w, h) / min(w, h)
 
-                    # Anti-face filter: buang box yang menempel di ujung atas tengah (wajah/kepala manusia)
-                    if is_live and (y1 < 0.08 * fh and 0.22 * fw < cx < 0.78 * fw):
+                    # 1. Anti-face filter: cek overlap dengan wajah manusia yang terdeteksi
+                    is_face = False
+                    for fx1, fy1, fx2, fy2 in detected_faces:
+                        if (fx1 - 20 <= cx <= fx2 + 20) and (fy1 - 20 <= cy <= fy2 + 35):
+                            is_face = True
+                            break
+                    if is_face:
+                        continue
+
+                    # 2. Anti-face filter cadangan: zona kepala atas-tengah frame
+                    if is_live and (cy < 0.45 * fh and 0.22 * fw < cx < 0.78 * fw and aspect < 2.0 and area_ratio < 0.25):
                         continue
 
                     if area_ratio >= 0.020 and aspect <= 4.5:
@@ -230,6 +261,14 @@ class SOPDetector:
             raise RuntimeError(
                 f"Gagal membuka kamera indeks {camera_id}. Pastikan webcam terhubung!"
             )
+
+        # Optimasi hardware camera: hilangkan lag buffer & aktifkan streaming cepat
+        try:
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
+            cap.set(cv2.CAP_PROP_FPS, 30)
+        except Exception:
+            pass
 
         width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))  or 1280
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
