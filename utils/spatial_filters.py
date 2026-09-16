@@ -202,17 +202,88 @@ def filter_class_size_mismatch(detections, frame_shape):
 def suppress_conflicting_detections(detections, iou_threshold=0.35):
     """
     Menghilangkan deteksi ganda / konflik kelas:
-    1. Jika 2 deteksi dari kelas BERBEDA memiliki IoU > 0.35 (menunjuk ke objek fisik yang sama),
-       pertahankan hanya yang memiliki confidence tertinggi.
-    2. Kardus vs Item (lakban/resi):
-       - Lakban/resi di atas kardus adalah NORMAL jika ukurannya wajar (area item <= 45% kardus).
-       - Jika item menutupi > 45% kardus, itu adalah salah tebak seluruh kardus sebagai lakban/resi,
-         sehingga item tersebut disupresi.
+    1. Objek Spesifik Memiliki Prioritas Atas Kontainer pada Lokasi yang Sama:
+       - Jika 'lakban' dan 'kardus' tumpang tindih pada lokasi yang sama (misal roll lakban
+         ditebak juga sebagai kardus karena warnanya cokelat/ada karton core):
+         -> 'lakban' SELALU MENANG dan 'kardus' disupresi, kecuali jika ukuran kardus
+            jauh lebih besar (>= 2.8x ukuran lakban, yaitu kardus nyata yang sedang dilakban).
+       - Jika 'resi' dan 'kardus' / 'lakban' tumpang tindih pada ukuran sebanding:
+         -> 'resi' SELALU MENANG dan deteksi lain disupresi.
+    2. NMS Lintas Kelas:
+       - Jika 2 deteksi dari kelas berbeda memiliki IoU > iou_threshold (0.35),
+         pertahankan hanya yang memiliki prioritas kontekstual atau confidence tertinggi.
     """
     if len(detections) <= 1:
         return detections
 
-    sorted_dets = sorted(detections, key=lambda d: d[2], reverse=True)
+    CLASS_PRIORITY = {"resi": 3, "lakban": 2, "kardus": 1}
+
+    # Tahap 1: Eliminasi kardus palsu yang menempel di atas roll lakban atau resi
+    lakban_boxes = [d for d in detections if d[1] == "lakban"]
+    resi_boxes   = [d for d in detections if d[1] == "resi"]
+
+    survivors = []
+    for d in detections:
+        box, cls_name, conf = d
+        x1, y1, x2, y2 = box
+        area = max((x2 - x1) * (y2 - y1), 1)
+
+        # Cek jika d adalah kardus, apakah menempel pada lakban
+        if cls_name == "kardus":
+            is_stuck_on_lakban = False
+            for l_box, l_cls, l_conf in lakban_boxes:
+                lx1, ly1, lx2, ly2 = l_box
+                l_area = max((lx2 - lx1) * (ly2 - ly1), 1)
+                ix1, iy1 = max(x1, lx1), max(y1, ly1)
+                ix2, iy2 = min(x2, lx2), min(y2, ly2)
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    # Jika kardus menutupi lakban atau sebaliknya, dan ukuran kardus tidak jauh lebih besar (< 2.8x)
+                    if (inter / l_area > 0.15 or inter / area > 0.20) and (area < 2.8 * l_area):
+                        is_stuck_on_lakban = True
+                        break
+            if is_stuck_on_lakban:
+                continue
+
+            # Cek jika d adalah kardus, apakah menempel pada resi
+            is_stuck_on_resi = False
+            for r_box, r_cls, r_conf in resi_boxes:
+                rx1, ry1, rx2, ry2 = r_box
+                r_area = max((rx2 - rx1) * (ry2 - ry1), 1)
+                ix1, iy1 = max(x1, rx1), max(y1, ry1)
+                ix2, iy2 = min(x2, rx2), min(y2, ry2)
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    if (inter / r_area > 0.15 or inter / area > 0.20) and (area < 2.8 * r_area):
+                        is_stuck_on_resi = True
+                        break
+            if is_stuck_on_resi:
+                continue
+
+        # Cek jika d adalah lakban, apakah menempel pada resi
+        if cls_name == "lakban":
+            is_stuck_on_resi = False
+            for r_box, r_cls, r_conf in resi_boxes:
+                rx1, ry1, rx2, ry2 = r_box
+                r_area = max((rx2 - rx1) * (ry2 - ry1), 1)
+                ix1, iy1 = max(x1, rx1), max(y1, ry1)
+                ix2, iy2 = min(x2, rx2), min(y2, ry2)
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    if (inter / r_area > 0.15 or inter / area > 0.20) and (area < 2.8 * r_area):
+                        is_stuck_on_resi = True
+                        break
+            if is_stuck_on_resi:
+                continue
+
+        survivors.append(d)
+
+    # Tahap 2: NMS lintas kelas untuk box dengan IoU tinggi
+    sorted_dets = sorted(
+        survivors,
+        key=lambda d: (CLASS_PRIORITY.get(d[1], 0) * 10.0 + d[2]),
+        reverse=True
+    )
     kept = []
 
     for det in sorted_dets:
@@ -226,7 +297,6 @@ def suppress_conflicting_detections(detections, iou_threshold=0.35):
             bx1, by1, bx2, by2 = box_b
             area_b = max((bx2 - bx1) * (by2 - by1), 1)
 
-            # Hitung intersection
             ix1, iy1 = max(ax1, bx1), max(ay1, by1)
             ix2, iy2 = min(ax2, bx2), min(ay2, by2)
 
@@ -235,22 +305,9 @@ def suppress_conflicting_detections(detections, iou_threshold=0.35):
                 union_area = area_a + area_b - inter_area
                 iou = inter_area / max(union_area, 1)
 
-                # Kasus 1: IoU tinggi (kedua box menempati lokasi fisik yang sama)
                 if iou > iou_threshold:
                     conflict = True
                     break
-
-                # Kasus 2: Kardus vs Item lakban/resi
-                if cls_a == "kardus" and cls_b in ("lakban", "resi"):
-                    # Box b (lakban/resi) ada di atas kardus a
-                    if area_b / area_a > 0.45 or inter_area / area_a > 0.45:
-                        conflict = True
-                        break
-                elif cls_b == "kardus" and cls_a in ("lakban", "resi"):
-                    # Box a (lakban/resi) ada di atas kardus b
-                    if area_a / area_b > 0.45 or inter_area / area_b > 0.45:
-                        conflict = True
-                        break
 
         if not conflict:
             kept.append(det)

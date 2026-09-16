@@ -428,6 +428,39 @@ class SOPDetector:
                 cls_name = det[1]
                 active_cache[cls_name] = {"det": det, "last_frame": frame_idx}
 
+            # Proteksi anti-menempel pada cache tampilan:
+            # 1. Jika ada lakban, buang kardus yang menempel/tumpang tindih pada lakban (< 2.8x luas lakban)
+            if "lakban" in active_cache and "kardus" in active_cache:
+                l_box = active_cache["lakban"]["det"][0]
+                k_box = active_cache["kardus"]["det"][0]
+                lx1, ly1, lx2, ly2 = l_box
+                kx1, ky1, kx2, ky2 = k_box
+                l_area = max((lx2 - lx1) * (ly2 - ly1), 1)
+                k_area = max((kx2 - kx1) * (ky2 - ky1), 1)
+                ix1, iy1 = max(lx1, kx1), max(ly1, ky1)
+                ix2, iy2 = min(lx2, kx2), min(ly2, ky2)
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = (ix2 - ix1) * (iy2 - iy1)
+                    if (inter / l_area > 0.15 or inter / k_area > 0.20) and (k_area < 2.8 * l_area):
+                        active_cache.pop("kardus", None)
+
+            # 2. Jika ada resi, buang kardus dan lakban yang menempel/tumpang tindih pada resi
+            if "resi" in active_cache:
+                r_box = active_cache["resi"]["det"][0]
+                rx1, ry1, rx2, ry2 = r_box
+                r_area = max((rx2 - rx1) * (ry2 - ry1), 1)
+                for other_cls in ("kardus", "lakban"):
+                    if other_cls in active_cache:
+                        o_box = active_cache[other_cls]["det"][0]
+                        ox1, oy1, ox2, oy2 = o_box
+                        o_area = max((ox2 - ox1) * (oy2 - oy1), 1)
+                        ix1, iy1 = max(rx1, ox1), max(ry1, oy1)
+                        ix2, iy2 = min(rx2, ox2), min(ry2, oy2)
+                        if ix2 > ix1 and iy2 > iy1:
+                            inter = (ix2 - ix1) * (iy2 - iy1)
+                            if (inter / r_area > 0.15 or inter / o_area > 0.20) and (o_area < 2.8 * r_area):
+                                active_cache.pop(other_cls, None)
+
             # Ambil deteksi aktif yang masih dalam batas persistensi
             display_detections = []
             active_classes = []
