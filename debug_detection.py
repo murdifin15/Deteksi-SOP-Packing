@@ -1,22 +1,29 @@
 """
 DEBUG TOOL — Tampilkan semua deteksi mentah YOLO tanpa filter apapun.
-Gunakan ini untuk mendiagnosis apakah model mendeteksi lakban/resi sama sekali.
+Gunakan ini untuk mendiagnosis apakah model mendeteksi kardus/lakban/resi.
 
-Jalankan:  python debug_detection.py
+Jalankan:  python debug_detection.py --cam-id 1
 Tekan 'q' / ESC untuk keluar.
 """
 
-import cv2
+import os
+import argparse
 import time
+import cv2
 from ultralytics import YOLO
 
+parser = argparse.ArgumentParser(description="Debug Tool Real-Time YOLO Detection")
+parser.add_argument("--cam-id", type=int, default=1, help="Indeks ID Kamera (default: 1)")
+parser.add_argument("--conf", type=float, default=0.03, help="Confidence threshold minimum (default: 0.03)")
+args = parser.parse_args()
+
 MODEL_PATH = "models/best_sop_packing.pt"
-CONF_MIN   = 0.25   # Threshold sangat rendah — tampilkan SEMUA deteksi
+CONF_MIN   = args.conf
 
 COLORS = {
-    "kardus": (255, 200, 0),
-    "lakban": (0, 255, 100),
-    "resi":   (0, 100, 255),
+    "kardus": (235, 100, 20),
+    "lakban": (0, 210, 255),
+    "resi":   (50, 50, 255),
 }
 COLOR_DEFAULT = (180, 180, 180)
 
@@ -24,41 +31,49 @@ print(f"[DEBUG] Memuat model: {MODEL_PATH}")
 model = YOLO(MODEL_PATH)
 print(f"[DEBUG] Class names: {model.names}")
 print(f"[DEBUG] Confidence minimum: {CONF_MIN:.0%}")
+print(f"[DEBUG] Membuka kamera ID #{args.cam_id}...")
 print()
 print("=" * 60)
-print(" Bounding box ditampilkan di jendela kamera.")
-print(" Log terminal dicetak setiap 20 frame.")
+print(" Bounding box & confidence ditampilkan di jendela kamera.")
+print(" Log terminal dicetak setiap 15 frame.")
 print(" Tekan 'q' atau ESC untuk keluar.")
 print("=" * 60)
 print()
 
-cap = cv2.VideoCapture(0)
+if os.name == "nt":
+    cap = cv2.VideoCapture(args.cam_id, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(args.cam_id)
+else:
+    cap = cv2.VideoCapture(args.cam_id)
+
 if not cap.isOpened():
-    print("[ERROR] Tidak bisa membuka kamera!")
+    print(f"[ERROR] Tidak bisa membuka kamera ID #{args.cam_id}!")
     exit(1)
 
-cv2.namedWindow("DEBUG -- Raw YOLO (No Filter)", cv2.WINDOW_NORMAL)
+cv2.namedWindow("DEBUG -- Raw YOLO Detections", cv2.WINDOW_NORMAL)
 
 MAPPING = {
     "kardus": "kardus", "box": "kardus", "cardboard box": "kardus",
     "cardboard_box": "kardus", "container": "kardus",
-    "package": "kardus", "packages": "kardus",
+    "package": "kardus", "packages": "kardus", "carton": "kardus",
+    "dus": "kardus", "kotak": "kardus",
     "lakban": "lakban", "tape": "lakban", "duct tape": "lakban",
-    "duct_tape": "lakban", "sealer": "lakban",
+    "duct_tape": "lakban", "sealer": "lakban", "solasi": "lakban",
     "resi": "resi", "resi_pengiriman": "resi",
     "shipping label": "resi", "shipping_label": "resi",
-    "label": "resi", "labels": "resi",
+    "label": "resi", "labels": "resi", "barcode": "resi",
 }
 
 frame_idx = 0
-LOG_EVERY = 20
+LOG_EVERY = 15
 
 while cap.isOpened():
     ret, frame = cap.read()
     if not ret:
         break
 
-    results = model(frame, verbose=False)[0]
+    results = model(frame, conf=CONF_MIN, verbose=False)[0]
     display = frame.copy()
     raw_list = []
 
@@ -76,19 +91,19 @@ while cap.isOpened():
 
         color = COLORS.get(sop_name, COLOR_DEFAULT)
         cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
-        label_str = f"{sop_name} ({conf:.0%}) raw={raw_name}"
-        (tw, th), _ = cv2.getTextSize(label_str, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+        label_str = f"{sop_name.upper()} ({conf:.0%})"
+        (tw, th), _ = cv2.getTextSize(label_str, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
         cv2.rectangle(display, (x1, max(0, y1 - 22)), (x1 + tw + 8, max(22, y1)), color, -1)
         cv2.putText(display, label_str, (x1 + 4, max(16, y1 - 5)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 0, 0), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
 
-    # Panel overlay
+    # Panel overlay info
     frame_h, frame_w = frame.shape[:2]
-    cv2.rectangle(display, (8, 8), (330, 125), (15, 15, 15), -1)
-    cv2.rectangle(display, (8, 8), (330, 125), (255, 200, 0), 1)
+    cv2.rectangle(display, (8, 8), (350, 125), (15, 15, 15), -1)
+    cv2.rectangle(display, (8, 8), (350, 125), (255, 200, 0), 1)
     y_txt = 28
-    cv2.putText(display, "DEBUG: RAW YOLO (conf>=20%, no filter)", (14, y_txt),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(display, f"DEBUG RAW YOLO (conf>={CONF_MIN:.0%})", (14, y_txt),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
     y_txt += 22
 
     for cls_chk, lbl in [("kardus", "Kardus"), ("lakban", "Lakban"), ("resi", "Resi")]:
@@ -104,7 +119,7 @@ while cap.isOpened():
                     cv2.FONT_HERSHEY_SIMPLEX, 0.40, color_txt, 1, cv2.LINE_AA)
         y_txt += 18
 
-    cv2.putText(display, f"Frame #{frame_idx} | Total: {len(raw_list)} objek",
+    cv2.putText(display, f"Frame #{frame_idx} | Total Objek: {len(raw_list)}",
                 (14, y_txt + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1, cv2.LINE_AA)
 
     # Log terminal
@@ -113,13 +128,13 @@ while cap.isOpened():
         if raw_list:
             print(f"[{t}] Frame #{frame_idx} | {len(raw_list)} objek terdeteksi:")
             for d in raw_list:
-                x1,y1,x2,y2,sop,raw,conf = d
-                area_pct = ((x2-x1)*(y2-y1)) / (frame_w*frame_h) * 100
-                print(f"  [{sop:8s}] conf={conf:.2f} raw='{raw}' area={area_pct:.1f}%")
+                x1, y1, x2, y2, sop, raw, conf = d
+                area_pct = ((x2 - x1) * (y2 - y1)) / (frame_w * frame_h) * 100
+                print(f"  [{sop:8s}] conf={conf:.2f} ({conf:.0%}) area={area_pct:.1f}%")
         else:
             print(f"[{t}] Frame #{frame_idx} | Tidak ada objek (conf>={CONF_MIN:.0%})")
 
-    cv2.imshow("DEBUG -- Raw YOLO (No Filter)", display)
+    cv2.imshow("DEBUG -- Raw YOLO Detections", display)
     frame_idx += 1
 
     key = cv2.waitKey(1) & 0xFF
