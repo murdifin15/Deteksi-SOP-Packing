@@ -173,8 +173,13 @@ class SOPDetector:
 
     def process_webcam(self, camera_id=0, save_output_path=None):
         """Menjalankan deteksi real-time menggunakan Live Webcam Stream."""
-        print(f"[INFO] Membuka Kamera Real-Time (Camera Index {camera_id})...")
-        cap = cv2.VideoCapture(camera_id)
+        # Coba buka menggunakan cv2.CAP_DSHOW (DirectShow di Windows) untuk performa dan stabilitas maksimal
+        if os.name == "nt":
+            cap = cv2.VideoCapture(camera_id, cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap = cv2.VideoCapture(camera_id)
+        else:
+            cap = cv2.VideoCapture(camera_id)
 
         if not cap.isOpened():
             raise RuntimeError(
