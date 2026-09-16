@@ -1,0 +1,31 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Caches
+.pytest_cache/
+.cache/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.env
+
+# Video output & recording files
+*.avi
+*.mp4
+*.mkv
+hasil_rekaman.avi
+rekaman_live_camera.avi
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Ultralytics runs / training outputs
+runs/
