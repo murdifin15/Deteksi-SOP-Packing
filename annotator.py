@@ -42,7 +42,7 @@ class SOPAnnotator:
 
     def draw_bounding_boxes(self, frame, detections):
         """
-        Melukis bounding box objek dan tag label pada frame secara tajam.
+        Melukis bounding box objek dan tag label pada frame secara tajam dan presisi.
         Warna berbeda per kelas: kardus=biru, lakban=kuning, resi=merah.
         :param detections: List tuple/dict [(bbox, label, confidence), ...]
                            di mana bbox = [x1, y1, x2, y2]
@@ -56,13 +56,26 @@ class SOPAnnotator:
             # Gambar Bounding Box 2px
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
 
-            # Background Tag Label
+            # Tag Label Presisi
             caption = f"{label.replace('_', ' ').title()} ({conf:.0%})"
-            (tw, th), _ = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+            font_scale = 0.45
+            (tw, th), baseline = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
 
-            cv2.rectangle(frame, (x1, max(0, y1 - 20)), (x1 + tw + 8, max(20, y1)), color, -1)
-            cv2.putText(frame, caption, (x1 + 4, max(15, y1 - 5)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.40, (0, 0, 0), 1, cv2.LINE_AA)
+            tag_h = th + baseline + 6
+            tag_w = tw + 8
+
+            if y1 - tag_h >= 0:
+                tag_y1 = y1 - tag_h
+                tag_y2 = y1
+                text_y = y1 - baseline - 2
+            else:
+                tag_y1 = y1
+                tag_y2 = y1 + tag_h
+                text_y = y1 + th + 2
+
+            cv2.rectangle(frame, (x1, tag_y1), (x1 + tag_w, tag_y2), color, -1)
+            cv2.putText(frame, caption, (x1 + 4, text_y),
+                        cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), 1, cv2.LINE_AA)
 
     def draw_hud_panel(self, frame, tracker, current_fps=0.0):
         """

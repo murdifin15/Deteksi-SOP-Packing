@@ -32,15 +32,15 @@ from utils.spatial_filters import (
 # KONFIGURASI CONFIDENCE THRESHOLD
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Threshold dasar per mode (live lebih toleran dari video karena gerak/blur)
-CONF_THRESHOLD_LIVE  = 0.12   # Ultra peka khusus untuk kardus
-CONF_THRESHOLD_VIDEO = 0.35
+# Threshold dasar per mode
+CONF_THRESHOLD_LIVE  = 0.15
+CONF_THRESHOLD_VIDEO = 0.25
 
 # Threshold per kelas untuk mode live
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.12,   # Ultra peka & instan mendeteksi kardus dalam kondisi apa pun
-    "lakban": 0.25,   # DIJAGA 100% (sangat cocok, tidak diubah)
-    "resi":   0.30,   # DIJAGA 100% (sangat cocok, tidak diubah)
+    "kardus": 0.15,
+    "lakban": 0.20,
+    "resi":   0.20,
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -104,7 +104,8 @@ class SOPDetector:
         detections  = []
 
         try:
-            results = self.model(frame, verbose=False)[0]
+            min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
+            results = self.model(frame, conf=min_yolo_conf, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf    = float(box.conf[0])
@@ -116,7 +117,7 @@ class SOPDetector:
                     continue
 
                 # ── Filter confidence per kelas ──
-                target_conf = CONF_PER_CLASS_LIVE.get(cls_name, CONF_THRESHOLD_LIVE) if is_live else CONF_THRESHOLD_VIDEO
+                target_conf = CONF_PER_CLASS_LIVE.get(cls_name, conf_thresh) if is_live else CONF_THRESHOLD_VIDEO
                 if conf < target_conf:
                     continue
 
@@ -315,24 +316,9 @@ class SOPDetector:
             # ── Update tracker dengan set yang sudah dismoothing ──
             tracker.update(list(smoothed_detected), current_time_sec)
 
-            # ── Bounding box persisten dengan TTL ──
-            CACHE_TTL_FRAMES = 5
-            display_detections = list(detections) if detections else []
-
-            if not display_detections:
-                for cls_name in smoothed_detected:
-                    frames_since = frame_idx - last_seen_frame.get(cls_name, -999)
-                    if frames_since <= CACHE_TTL_FRAMES and cls_name in last_seen_detections:
-                        display_detections.append(last_seen_detections[cls_name])
-
-            # Bersihkan cache kelas yang sudah lama tidak terdeteksi
-            for cls_name in list(last_seen_detections.keys()):
-                if frame_idx - last_seen_frame.get(cls_name, -999) > CACHE_TTL_FRAMES * 2:
-                    del last_seen_detections[cls_name]
-
-            # ── Anotasi frame (bounding box + HUD) ──
+            # ── Anotasi frame (bounding box langsung dari deteksi frame aktif + HUD) ──
             annotated_frame = self.annotator.annotate_frame(
-                frame, display_detections, tracker, current_fps=current_fps
+                frame, detections, tracker, current_fps=current_fps
             )
 
             cv2.putText(annotated_frame, "Tekan 'q' atau 'ESC' untuk Selesai",

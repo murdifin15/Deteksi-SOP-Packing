@@ -129,9 +129,9 @@ class SOPSequenceTracker:
                 step["end_time"]         = current_timestamp_sec
                 step["last_active_time"] = current_timestamp_sec
 
-                # Update status visual menjadi IN_PROGRESS saat sudah cukup aktif
+                # Update status visual menjadi IN_PROGRESS saat sudah mulai aktif
                 if (step["status"] == "PENDING" and
-                        step["frames_consecutive"] >= max(5, self.debounce_threshold // 3)):
+                        step["frames_consecutive"] >= max(1, self.debounce_threshold // 3)):
                     step["status"] = "IN_PROGRESS"
 
                 # PASSED: KEDUA syarat harus terpenuhi

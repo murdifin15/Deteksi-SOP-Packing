@@ -24,26 +24,18 @@ Isi modul:
 ROI_RATIO = (0.01, 0.01, 0.99, 0.99)
 
 # Ukuran minimum bounding box sebagai rasio dari total area frame.
-# Hanya menolak noise ekstrem (debu/piksel acak) — sengaja sangat longgar.
-BOX_MIN_AREA_RATIO = 0.001   # Minimal ~0.1% area frame (~36x36px di 720p)
+# Hanya menolak noise ekstrem (piksel acak) — sangat toleran.
+BOX_MIN_AREA_RATIO = 0.0005
 
 # Rasio aspek maksimum bounding box kardus (lebar/tinggi atau tinggi/lebar)
-# Dibuat sangat toleran (10.0) agar semua orientasi/perspektif kardus dapat terdeteksi
 KARDUS_MAX_ASPECT  = 10.0
 
-# Batas ukuran bounding box per kelas.
-#
-# KARDUS  : tidak ada minimum (0.0) — mencegah deadlock dengan apply_spatial_context.
-#           Dikontrol oleh confidence threshold + aspect ratio filter.
-# LAKBAN  : minimum 0.5% frame — lakban yg ditunjukkan ke kamera harus cukup besar.
-#           Tekstur dinding yang terbaca sbg lakban biasanya sangat kecil.
-# RESI    : minimum 0.8% frame — resi yg ditunjukkan ke kamera harus jelas terlihat.
-#           Noise tekstur dinding yang terbaca sbg resi biasanya area sangat kecil.
+# Batas ukuran bounding box per kelas (min_ratio, max_ratio)
+# Dibuat toleran agar objek yang didekatkan ke kamera tetap terdeteksi dengan baik.
 BOX_SIZE_PER_CLASS = {
-    #                min_ratio   max_ratio
-    "kardus":       (0.000,      1.00),   # Bebas tanpa batas min/max (100% area frame lolos)
-    "lakban":       (0.001,      0.35),   # Min 0.1% frame (~36x36px di 720p) — peka & mudah terdeteksi
-    "resi":         (0.004,      0.20),   # Min 0.4% frame (~54x54px di 720p) — stabil & tidak halu
+    "kardus":       (0.000,      1.00),   # Kardus bebas (0 - 100% area)
+    "lakban":       (0.0005,     0.85),   # Lakban (0.05% - 85% area)
+    "resi":         (0.0005,     0.85),   # Resi (0.05% - 85% area)
 }
 
 
