@@ -40,11 +40,10 @@ CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
 # Threshold per kelas untuk mode live — terkalibrasi responsif & presisi anti-halusinasi:
-# Threshold per kelas untuk mode live — terkalibrasi responsif & presisi anti-halusinasi:
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.030,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
-    "lakban": 0.030,  # Responsif menangkap lakban bening / cokelat (0.03 - 0.90)
-    "resi":   0.35,   # Resi nyata (0.35 - 0.85), memblokir stiker/refleksi gulungan lakban
+    "kardus": 0.08,  # Menangkap kardus nyata (0.15 - 0.55), memblokir noise 0.047
+    "lakban": 0.20,  # Menangkap lakban nyata (0.40 - 0.88), memblokir 100% noise lipatan kardus (0.04 - 0.14)
+    "resi":   0.30,  # Menangkap resi nyata (0.35 - 0.85), memblokir stiker/refleksi gulungan lakban
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -187,24 +186,12 @@ class SOPDetector:
                 area_ratio = (w * h) / frame_area
                 aspect = max(w, h) / min(w, h)
 
-                # ── Khusus Step 2 (Lakban & Segel): Remap roll lakban yang disangka kardus ──
-                # Gulungan lakban bening ber-inti karton di tangan (area < 18%, aspect <= 1.6)
-                # dideteksi YOLO sebagai kardus. Remap secara cerdas menjadi 'lakban'!
-                if is_live and step1_passed and not step2_passed:
-                    if cls_name == "kardus":
-                        if 0.025 <= area_ratio < 0.18 and aspect <= 1.6:
-                            cls_name = "lakban"
-                            d = ([x1, y1, x2, y2], "lakban", conf)
-                        elif area_ratio < 0.18:
-                            continue  # Buang noise kardus kecil di Step 2
-
                 if cls_name == "kardus":
                     # 2. Anti-face filter cadangan: zona kepala atas-tengah frame
                     if is_live and (cy < 0.45 * fh and 0.22 * fw < cx < 0.78 * fw and aspect < 2.0 and area_ratio < 0.25):
                         continue
 
-                    min_area_kardus = 0.18 if (is_live and step1_passed) else 0.025
-                    if area_ratio >= min_area_kardus and aspect <= 4.0:
+                    if area_ratio >= 0.025 and aspect <= 4.0:
                         kardus_dets.append(d)
                 else:
                     other_dets.append(d)
@@ -340,13 +327,13 @@ class SOPDetector:
                             if cls_name == "kardus":
                                 if conf >= 0.15 or infer_streak["kardus"] >= 2:
                                     confirmed.append(d)
-                            # Lakban: responsif instan saat diperlihatkan
+                            # Lakban: konfirmasi jika conf >= 0.25 atau streak >= 2
                             elif cls_name == "lakban":
-                                if conf >= 0.03:
+                                if conf >= 0.25 or infer_streak["lakban"] >= 2:
                                     confirmed.append(d)
-                            # Resi: konfirmasi jika conf >= 0.40 atau streak >= 2
+                            # Resi: konfirmasi jika conf >= 0.35 atau streak >= 2
                             elif cls_name == "resi":
-                                if conf >= 0.40 or infer_streak["resi"] >= 2:
+                                if conf >= 0.35 or infer_streak["resi"] >= 2:
                                     confirmed.append(d)
 
                         with latest_dets_lock:
@@ -536,7 +523,7 @@ class SOPDetector:
                 break
             elif key == ord('r') or key == ord('R'):
                 print("\n[INFO] SOP Sequence Tracker di-reset.")
-                tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
+                tracker = SOPSequenceTracker(debounce_threshold=10, min_duration_seconds=1.5)
                 active_cache.clear()
                 infer_streak = {"kardus": 0, "lakban": 0, "resi": 0}
 

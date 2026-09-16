@@ -236,11 +236,18 @@ def suppress_conflicting_detections(detections, iou_threshold=0.25):
                 iou = inter / max(union, 1)
 
                 is_legit_parent_child = False
-                if cls_a == "kardus" and cls_b in ("lakban", "resi"):
-                    if area_a >= 2.8 * area_b and (inter / area_a < 0.40):
+                if cls_a == "kardus" and cls_b == "resi":
+                    if area_a >= 2.5 * area_b and (inter / area_a < 0.40):
                         is_legit_parent_child = True
-                elif cls_b == "kardus" and cls_a in ("lakban", "resi"):
-                    if area_b >= 2.8 * area_a and (inter / area_b < 0.40):
+                elif cls_b == "kardus" and cls_a == "resi":
+                    if area_b >= 2.5 * area_a and (inter / area_b < 0.40):
+                        is_legit_parent_child = True
+                elif cls_a == "kardus" and cls_b == "lakban":
+                    # Lakban di atas/depan kardus hanya sah jika conf tinggi (bukan sambungan/garis kardus)
+                    if area_a >= 2.8 * area_b and conf_b >= 0.35:
+                        is_legit_parent_child = True
+                elif cls_b == "kardus" and cls_a == "lakban":
+                    if area_b >= 2.8 * area_a and conf_a >= 0.35:
                         is_legit_parent_child = True
 
                 if is_legit_parent_child:

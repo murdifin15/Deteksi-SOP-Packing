@@ -129,10 +129,11 @@ class SOPSequenceTracker:
                 step["end_time"]         = current_timestamp_sec
                 step["last_active_time"] = current_timestamp_sec
 
-                # Khusus Step 1 (Kardus): konfirmasi instan begitu kardus terdeteksi
-                # Menempatkan kardus di area kerja adalah prasyarat SOP, 1 deteksi valid langsung PASSED
+                # Khusus Step 1 (Kardus): konfirmasi stabil setelah 4 frame konsekutif (~150ms)
                 if step_id == 1:
-                    if step["status"] in ("PENDING", "IN_PROGRESS") and step["frames_active"] >= 1:
+                    if step["status"] == "PENDING" and step["frames_active"] >= 1:
+                        step["status"] = "IN_PROGRESS"
+                    if step["status"] in ("PENDING", "IN_PROGRESS") and step["frames_consecutive"] >= 4:
                         step["status"] = "PASSED"
                 else:
                     # Update status visual menjadi IN_PROGRESS saat mulai aktif
