@@ -36,11 +36,11 @@ from utils.spatial_filters import (
 CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live (terkalibrasi presisi: anti-false-positive wajah/noise)
+# Threshold per kelas untuk mode live
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.28,   # 0.28 memblokir 100% deteksi wajah manusia & hanya mengenali kardus asli
-    "lakban": 0.25,   # Stabil & akurat
-    "resi":   0.25,   # Stabil & akurat
+    "kardus": 0.20,   # Seimbang: deteksi kardus responsif tanpa false-positive wajah
+    "lakban": 0.22,   # Stabil & akurat
+    "resi":   0.22,   # Stabil & akurat
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -93,10 +93,24 @@ class SOPDetector:
     # YOLO INFERENCE + FILTER DASAR (CONFIDENCE, SIZE, ASPECT RATIO)
     # ──────────────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _enhance_frame(frame):
+        """
+        Terapkan CLAHE (Contrast Limited Adaptive Histogram Equalization) pada channel L
+        di ruang warna LAB agar kontras tekstur kardus meningkat secara adaptif.
+        Sangat membantu pada kondisi pencahayaan redup atau warna kardus yang flat.
+        """
+        lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        enhanced = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+        return enhanced
+
     def detect_frame(self, frame, is_live=False):
         """
         Jalankan YOLO inference pada satu frame.
-        Kardus langsung diloloskan tanpa filter pemotongan agar deteksi instan dan konsisten.
+        Frame diperkuat kontrasnya dengan CLAHE sebelum dikirim ke model.
 
         Returns:
             List of (box [x1,y1,x2,y2], cls_name str, conf float)
@@ -104,9 +118,12 @@ class SOPDetector:
         conf_thresh = CONF_THRESHOLD_LIVE if is_live else CONF_THRESHOLD_VIDEO
         detections  = []
 
+        # Perkuat kontras frame (khusus mode live) sebelum inference
+        inference_frame = self._enhance_frame(frame) if is_live else frame
+
         try:
             min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
-            results = self.model(frame, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
+            results = self.model(inference_frame, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf    = float(box.conf[0])
