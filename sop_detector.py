@@ -121,7 +121,7 @@ class SOPDetector:
         try:
             min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
             imgsz = 416 if is_live else 640
-            results = self.model(frame, imgsz=imgsz, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
+            results = self.model(frame, imgsz=imgsz, conf=min_yolo_conf, iou=0.45, agnostic_nms=True, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf    = float(box.conf[0])
@@ -169,7 +169,15 @@ class SOPDetector:
             other_dets = filter_class_size_mismatch(other_dets, frame.shape)
             other_dets = filter_by_roi(other_dets, frame.shape)
 
-            detections = kardus_dets + other_dets
+            # Buang deteksi palsu di area panel HUD pojok kiri atas
+            combined = kardus_dets + other_dets
+            if is_live:
+                detections = [
+                    d for d in combined
+                    if not ((d[0][0] + d[0][2]) / 2 < 285 and (d[0][1] + d[0][3]) / 2 < 140)
+                ]
+            else:
+                detections = combined
 
         except Exception as e:
             # Log throttled — hanya cetak tiap 30 frame agar tidak spam
@@ -241,8 +249,8 @@ class SOPDetector:
         # ── Konfigurasi tracker live webcam ──
         tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
 
-        # ── Persistent Box & Tracker Cache (Anti-Kedip & Smooth Tracking) ──
-        PERSIST_FRAMES = 15
+        # ── Persistent Box & Tracker Cache (Anti-Kedip & Responsif) ──
+        PERSIST_FRAMES = 4
         active_cache: dict[str, dict] = {}
 
         # ── Threaded Background Inference Worker (Decoupled dari GUI Display) ──

@@ -199,9 +199,46 @@ def filter_class_size_mismatch(detections, frame_shape):
     return valid
 
 
+def suppress_overlapping_classes(detections, iou_threshold=0.30):
+    """
+    Jika ada 2 atau lebih deteksi dari kelas BERBEDA yang bertumpuk pada posisi yang sama,
+    hanya pertahankan kelas yang memiliki tingkat keyakinan (confidence) tertinggi.
+    Mencegah satu objek fisik memicu bounding box kardus, lakban, dan resi secara bersamaan.
+    """
+    if len(detections) <= 1:
+        return detections
+
+    sorted_dets = sorted(detections, key=lambda d: d[2], reverse=True)
+    kept = []
+
+    for det in sorted_dets:
+        box_a, cls_a, conf_a = det
+        ax1, ay1, ax2, ay2 = box_a
+        area_a = max((ax2 - ax1) * (ay2 - ay1), 1)
+
+        overlap = False
+        for k_det in kept:
+            box_b, cls_b, conf_b = k_det
+            bx1, by1, bx2, by2 = box_b
+            area_b = max((bx2 - bx1) * (by2 - by1), 1)
+
+            ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+            ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+            if ix2 > ix1 and iy2 > iy1:
+                inter_area = (ix2 - ix1) * (iy2 - iy1)
+                iou = inter_area / (area_a + area_b - inter_area)
+                if iou > iou_threshold or (inter_area / min(area_a, area_b) > 0.45):
+                    overlap = True
+                    break
+        if not overlap:
+            kept.append(det)
+
+    return kept
+
+
 def apply_spatial_context(detections, step1_passed=False):
     """
-    Meloloskan seluruh deteksi objek (kardus, lakban, resi) agar selalu tampil
-    di layar kamera secara real-time.
+    Filter spasial & supresi tumpang tindih:
+    Memastikan tidak ada dua bounding box berbeda kelas yang bertumpuk pada satu objek.
     """
-    return detections
+    return suppress_overlapping_classes(detections)
