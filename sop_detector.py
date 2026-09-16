@@ -33,14 +33,14 @@ from utils.spatial_filters import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Threshold dasar per mode
-CONF_THRESHOLD_LIVE  = 0.05
+CONF_THRESHOLD_LIVE  = 0.20
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live
+# Threshold per kelas untuk mode live (terkalibrasi presisi & anti-noise)
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.03,   # Sangat peka 0.03 agar kardus langsung terkunci seketika
-    "lakban": 0.18,   # Stabil & akurat
-    "resi":   0.18,   # Stabil & akurat
+    "kardus": 0.12,   # Peka dan stabil untuk kardus
+    "lakban": 0.30,   # Bersih dari tekstur/pantulan kardus
+    "resi":   0.35,   # Bersih dari pantulan/print label kardus
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -202,16 +202,13 @@ class SOPDetector:
             )
             out = cv2.VideoWriter(save_output_path, fourcc, write_fps, (width, height))
 
-        # ── Anti-halusinasi: debounce 2 frame, min 0.2 detik nyata untuk live camera ──
-        tracker = SOPSequenceTracker(debounce_threshold=2, min_duration_seconds=0.2)
+        # ── Anti-halusinasi: debounce 4 frame, min 0.6 detik nyata untuk live camera ──
+        tracker = SOPSequenceTracker(debounce_threshold=4, min_duration_seconds=0.6)
 
         # ── Temporal Smoothing Buffer ──
-        # Objek dianggap hadir jika terdeteksi >= SMOOTH_MIN_HITS dari SMOOTH_WINDOW frame terakhir.
-        # Window 6 frame di ~7 FPS = ~0.9 detik memori.
-        # 2 hit dalam 6 frame (33%) cukup ketat untuk mencegah noise tapi toleran terhadap
-        # flicker model — kardus yang terdeteksi intermittent tetap terhitung.
+        # Window 6 frame, minimal 2 hit untuk mencegah false-positive sesaat
         SMOOTH_WINDOW   = 6
-        SMOOTH_MIN_HITS = 1   # Set ke 1 agar kardus terdeteksi instan pada frame pertama
+        SMOOTH_MIN_HITS = 2
         class_buffer: dict[str, deque] = {
             cls: deque(maxlen=SMOOTH_WINDOW) for cls in VALID_CLASSES
         }
