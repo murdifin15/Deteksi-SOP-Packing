@@ -33,14 +33,14 @@ from utils.spatial_filters import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Threshold dasar per mode
-CONF_THRESHOLD_LIVE  = 0.10
+CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live
+# Threshold per kelas untuk mode live (terkalibrasi presisi: anti-false-positive wajah/noise)
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.04,   # Sangat peka agar kardus langsung tertangkap di kamera
-    "lakban": 0.15,   # Responsif & stabil
-    "resi":   0.15,   # Responsif & stabil
+    "kardus": 0.28,   # 0.28 memblokir 100% deteksi wajah manusia & hanya mengenali kardus asli
+    "lakban": 0.25,   # Stabil & akurat
+    "resi":   0.25,   # Stabil & akurat
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem

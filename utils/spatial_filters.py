@@ -34,7 +34,7 @@ KARDUS_MAX_ASPECT  = 20.0
 # Batas ukuran bounding box per kelas (min_ratio, max_ratio)
 # Dibuat toleran agar objek yang didekatkan ke kamera tetap terdeteksi dengan baik.
 BOX_SIZE_PER_CLASS = {
-    "kardus":       (0.000,      1.00),   # Kardus bebas (0 - 100% area)
+    "kardus":       (0.010,      1.00),   # Minimal 1% area frame (menolak wajah/noise kecil di kejauhan)
     "lakban":       (0.0005,     0.85),   # Lakban (0.05% - 85% area)
     "resi":         (0.0005,     0.85),   # Resi (0.05% - 85% area)
 }
