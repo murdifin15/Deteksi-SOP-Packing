@@ -129,21 +129,23 @@ class SOPSequenceTracker:
                 step["end_time"]         = current_timestamp_sec
                 step["last_active_time"] = current_timestamp_sec
 
-                # Khusus Step 1 (Kardus): instan 1 frame agar langsung terkonfirmasi saat kardus di meja
-                required_debounce = 1 if step_id == 1 else self.debounce_threshold
-                required_duration = 0.1 if step_id == 1 else self.min_duration_seconds
+                # Khusus Step 1 (Kardus): konfirmasi instan begitu kardus terdeteksi
+                # Menempatkan kardus di area kerja adalah prasyarat SOP, 1 deteksi valid langsung PASSED
+                if step_id == 1:
+                    if step["status"] in ("PENDING", "IN_PROGRESS") and step["frames_active"] >= 1:
+                        step["status"] = "PASSED"
+                else:
+                    # Update status visual menjadi IN_PROGRESS saat mulai aktif
+                    if step["status"] == "PENDING" and step["frames_active"] >= 1:
+                        step["status"] = "IN_PROGRESS"
 
-                # Update status visual menjadi IN_PROGRESS saat mulai aktif
-                if (step["status"] == "PENDING" and
-                        step["frames_consecutive"] >= 1):
-                    step["status"] = "IN_PROGRESS"
+                    # Step 2 & 3: gunakan debounce konsekutif + durasi
+                    if (step["status"] in ("PENDING", "IN_PROGRESS") and
+                            step["frames_consecutive"] >= self.debounce_threshold and
+                            step["total_active_duration"] >= self.min_duration_seconds):
+                        step["status"] = "PASSED"
 
-                # PASSED: Syarat terpenuhi
-                if (step["status"] in ("PENDING", "IN_PROGRESS") and
-                        step["frames_consecutive"] >= required_debounce and
-                        step["total_active_duration"] >= required_duration):
-                    step["status"] = "PASSED"
-
+                if step["status"] == "PASSED":
                     # Evaluasi urutan (sequence compliance check)
                     for prev_idx in range(step_id - 1):
                         prev_step = self.steps[prev_idx]
@@ -160,7 +162,8 @@ class SOPSequenceTracker:
 
             else:
                 # Soft-decay: kurangi frames_consecutive sebesar 1 (bukan hard-reset ke 0)
-                # agar flicker 1-2 frame tidak menghancurkan akumulasi progres kardus.
+                # agar flicker 1-2 frame tidak menghancurkan akumulasi progres.
+                # Step 1 tidak terpengaruh karena menggunakan total_active_duration, bukan consecutive.
                 step["frames_consecutive"] = max(0, step["frames_consecutive"] - 1)
 
     def finalize(self):

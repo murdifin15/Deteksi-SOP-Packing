@@ -36,11 +36,12 @@ from utils.spatial_filters import (
 CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live
+# Threshold per kelas untuk mode live — dikalibrasi presisi dari data log webcam:
+# Kardus di webcam user berada di rentang conf 0.02 - 0.28 (rata-rata 0.05-0.15)
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.12,   # Toleran — sesuaikan berdasarkan hasil debug_detection.py
-    "lakban": 0.22,   # Stabil & akurat
-    "resi":   0.22,   # Stabil & akurat
+    "kardus": 0.02,   # Dikalibrasi dari debug log: tangkap seluruh deteksi valid kardus
+    "lakban": 0.18,   # Lakban stabil (di debug mencapai 0.26)
+    "resi":   0.10,   # Resi stabil & toleran
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -110,7 +111,6 @@ class SOPDetector:
     def detect_frame(self, frame, is_live=False):
         """
         Jalankan YOLO inference pada satu frame.
-        Frame diperkuat kontrasnya dengan CLAHE sebelum dikirim ke model.
 
         Returns:
             List of (box [x1,y1,x2,y2], cls_name str, conf float)
@@ -118,12 +118,9 @@ class SOPDetector:
         conf_thresh = CONF_THRESHOLD_LIVE if is_live else CONF_THRESHOLD_VIDEO
         detections  = []
 
-        # Perkuat kontras frame (khusus mode live) sebelum inference
-        inference_frame = self._enhance_frame(frame) if is_live else frame
-
         try:
             min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
-            results = self.model(inference_frame, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
+            results = self.model(frame, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf    = float(box.conf[0])
@@ -141,9 +138,24 @@ class SOPDetector:
 
                 detections.append(([x1, y1, x2, y2], cls_name, conf))
 
-            # Kardus 100% diloloskan langsung tanpa filter restriktif
-            kardus_dets = [d for d in detections if d[1] == "kardus"]
-            other_dets  = [d for d in detections if d[1] != "kardus"]
+            # Validasi kardus: loloskan kardus berukuran wajar (area >= 2.5% frame, aspect ratio wajar)
+            # Kardus asli di kamera user berukuran 12.6% - 25.9%, noise specks < 2.0%
+            fh, fw = frame.shape[:2]
+            frame_area = max(fh * fw, 1)
+
+            kardus_dets = []
+            other_dets  = []
+            for d in detections:
+                (x1, y1, x2, y2), cls_name, conf = d
+                if cls_name == "kardus":
+                    w = max(x2 - x1, 1)
+                    h = max(y2 - y1, 1)
+                    area_ratio = (w * h) / frame_area
+                    aspect = max(w, h) / min(w, h)
+                    if area_ratio >= 0.025 and aspect <= 4.5:
+                        kardus_dets.append(d)
+                else:
+                    other_dets.append(d)
 
             # Filter spasial & ukuran hanya untuk non-kardus
             other_dets = filter_min_box_size(other_dets, frame.shape)
@@ -219,19 +231,14 @@ class SOPDetector:
             )
             out = cv2.VideoWriter(save_output_path, fourcc, write_fps, (width, height))
 
-        # ── Konfigurasi tracker: debounce 3 frame, min 0.4 detik nyata untuk live camera ──
+        # ── Konfigurasi tracker live webcam ──
         tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
 
-        # ── Temporal Smoothing Buffer ──
-        SMOOTH_WINDOW   = 4
-        SMOOTH_MIN_HITS = 1
-        class_buffer: dict[str, deque] = {
-            cls: deque(maxlen=SMOOTH_WINDOW) for cls in VALID_CLASSES
-        }
-
-        # Cache deteksi terakhir per kelas — bounding box persisten (anti-kedip)
-        last_seen_detections: dict = {}
-        last_seen_frame: dict      = {}
+        # ── Persistent Box & Tracker Cache (Anti-Kedip & Smooth Tracking) ──
+        # Objek yang terdeteksi dipertahankan selama PERSIST_FRAMES (12 frame ≈ 0.4 detik)
+        # agar bounding box stabil di layar tanpa berkedip dan tracker menerima input kontinu.
+        PERSIST_FRAMES = 12
+        active_cache: dict[str, dict] = {}
 
         start_time   = time.time()
         frame_idx    = 0
@@ -310,28 +317,27 @@ class SOPDetector:
             # ── Filter spasial kontekstual (lakban/resi harus dekat kardus) ──
             detections = self.apply_contextual_filter(detections, step1_passed=step1_passed)
 
-            # ── Update cache ──
+            # ── Update cache persistensi ──
             for det in detections:
                 cls_name = det[1]
-                last_seen_detections[cls_name] = det
-                last_seen_frame[cls_name]       = frame_idx
+                active_cache[cls_name] = {"det": det, "last_frame": frame_idx}
 
-            # ── Temporal smoothing buffer ──
-            raw_detected = {d[1] for d in detections}
-            for cls in class_buffer:
-                class_buffer[cls].append(1 if cls in raw_detected else 0)
+            # Ambil deteksi aktif yang masih dalam batas persistensi
+            display_detections = []
+            active_classes = []
+            for cls_name, item in list(active_cache.items()):
+                if frame_idx - item["last_frame"] <= PERSIST_FRAMES:
+                    display_detections.append(item["det"])
+                    active_classes.append(cls_name)
+                else:
+                    active_cache.pop(cls_name, None)
 
-            smoothed_detected = {
-                cls for cls, buf in class_buffer.items()
-                if len(buf) >= SMOOTH_MIN_HITS and sum(buf) >= SMOOTH_MIN_HITS
-            }
+            # ── Update tracker dengan kelas aktif yang stabil ──
+            tracker.update(active_classes, current_time_sec)
 
-            # ── Update tracker dengan set yang sudah dismoothing ──
-            tracker.update(list(smoothed_detected), current_time_sec)
-
-            # ── Anotasi frame (bounding box langsung dari deteksi frame aktif + HUD) ──
+            # ── Anotasi frame (bounding box persisten + HUD) ──
             annotated_frame = self.annotator.annotate_frame(
-                frame, detections, tracker, current_fps=current_fps
+                frame, display_detections, tracker, current_fps=current_fps
             )
 
             cv2.putText(annotated_frame, "Tekan 'q' atau 'ESC' untuk Selesai",
