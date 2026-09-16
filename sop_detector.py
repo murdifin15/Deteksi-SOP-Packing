@@ -38,7 +38,7 @@ CONF_THRESHOLD_VIDEO = 0.25
 
 # Threshold per kelas untuk mode live
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.08,   # Ditingkatkan sensitivitasnya agar kardus terdeteksi instan dari berbagai sudut/pencahayaan
+    "kardus": 0.05,   # Ultra-peka 0.05 agar kardus terdeteksi instan tanpa hambatan
     "lakban": 0.20,   # Stabil & akurat
     "resi":   0.20,   # Stabil & akurat
 }
@@ -47,12 +47,13 @@ CONF_PER_CLASS_LIVE = {
 CLASS_NAME_MAPPING = {
     "kardus": "kardus", "box": "kardus", "cardboard box": "kardus",
     "cardboard_box": "kardus", "container": "kardus",
-    "package": "kardus", "packages": "kardus",
+    "package": "kardus", "packages": "kardus", "carton": "kardus",
+    "dus": "kardus", "kotak": "kardus",
     "lakban": "lakban", "tape": "lakban", "duct tape": "lakban",
-    "duct_tape": "lakban", "sealer": "lakban",
+    "duct_tape": "lakban", "sealer": "lakban", "solasi": "lakban",
     "resi": "resi", "resi_pengiriman": "resi",
     "shipping label": "resi", "shipping_label": "resi",
-    "label": "resi", "labels": "resi",
+    "label": "resi", "labels": "resi", "barcode": "resi",
 }
 
 VALID_CLASSES = {"kardus", "lakban", "resi"}
@@ -95,7 +96,7 @@ class SOPDetector:
     def detect_frame(self, frame, is_live=False):
         """
         Jalankan YOLO inference pada satu frame.
-        Filter confidence per kelas, minimum box size, dan aspect ratio kardus.
+        Kardus langsung diloloskan tanpa filter pemotongan agar deteksi instan dan konsisten.
 
         Returns:
             List of (box [x1,y1,x2,y2], cls_name str, conf float)
@@ -105,7 +106,7 @@ class SOPDetector:
 
         try:
             min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
-            results = self.model(frame, conf=min_yolo_conf, verbose=False)[0]
+            results = self.model(frame, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf    = float(box.conf[0])
@@ -123,17 +124,16 @@ class SOPDetector:
 
                 detections.append(([x1, y1, x2, y2], cls_name, conf))
 
-            # ── Filter: Aspect Ratio kardus tidak wajar ──
-            detections = filter_aspect_ratio(detections)
+            # Kardus 100% diloloskan langsung tanpa filter restriktif
+            kardus_dets = [d for d in detections if d[1] == "kardus"]
+            other_dets  = [d for d in detections if d[1] != "kardus"]
 
-            # ── Filter: Bounding box terlalu kecil (objek jauh / noise) ──
-            detections = filter_min_box_size(detections, frame.shape)
+            # Filter spasial & ukuran hanya untuk non-kardus
+            other_dets = filter_min_box_size(other_dets, frame.shape)
+            other_dets = filter_class_size_mismatch(other_dets, frame.shape)
+            other_dets = filter_by_roi(other_dets, frame.shape)
 
-            # ── Filter: Ukuran tidak sesuai kelas (anti salah tebak kardus/lakban) ──
-            detections = filter_class_size_mismatch(detections, frame.shape)
-
-            # ── Filter: Objek di luar zona kerja aktif (ROI) ──
-            detections = filter_by_roi(detections, frame.shape)
+            detections = kardus_dets + other_dets
 
         except Exception as e:
             # Log throttled — hanya cetak tiap 30 frame agar tidak spam
