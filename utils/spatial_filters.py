@@ -201,13 +201,7 @@ def filter_class_size_mismatch(detections, frame_shape):
 
 def apply_spatial_context(detections, step1_passed=False):
     """
-    Filter kontekstual SOP:
-    - Sebelum Step 1 (Kardus) PASSED: hanya loloskan deteksi 'kardus'.
-      Mencegah noise/refleksi kardus memicu lakban atau resi secara prematur.
-    - Setelah Step 1 PASSED: loloskan semua kelas (kardus, lakban, resi).
+    Meloloskan seluruh deteksi objek (kardus, lakban, resi) agar selalu tampil
+    di layar kamera secara real-time.
     """
-    if not step1_passed:
-        # Sebelum kardus terkonfirmasi, hanya fokus mendeteksi kardus
-        return [d for d in detections if d[1] == "kardus"]
-
     return detections

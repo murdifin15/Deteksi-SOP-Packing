@@ -33,14 +33,14 @@ from utils.spatial_filters import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Threshold dasar per mode
-CONF_THRESHOLD_LIVE  = 0.20
+CONF_THRESHOLD_LIVE  = 0.10
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live (terkalibrasi presisi & anti-noise)
+# Threshold per kelas untuk mode live
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.12,   # Peka dan stabil untuk kardus
-    "lakban": 0.30,   # Bersih dari tekstur/pantulan kardus
-    "resi":   0.35,   # Bersih dari pantulan/print label kardus
+    "kardus": 0.08,   # Sangat responsif mendeteksi kardus
+    "lakban": 0.15,   # Sangat responsif mendeteksi lakban
+    "resi":   0.15,   # Sangat responsif mendeteksi resi
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -202,13 +202,12 @@ class SOPDetector:
             )
             out = cv2.VideoWriter(save_output_path, fourcc, write_fps, (width, height))
 
-        # ── Anti-halusinasi: debounce 4 frame, min 0.6 detik nyata untuk live camera ──
-        tracker = SOPSequenceTracker(debounce_threshold=4, min_duration_seconds=0.6)
+        # ── Konfigurasi tracker: debounce 3 frame, min 0.4 detik nyata untuk live camera ──
+        tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
 
         # ── Temporal Smoothing Buffer ──
-        # Window 6 frame, minimal 2 hit untuk mencegah false-positive sesaat
-        SMOOTH_WINDOW   = 6
-        SMOOTH_MIN_HITS = 2
+        SMOOTH_WINDOW   = 4
+        SMOOTH_MIN_HITS = 1
         class_buffer: dict[str, deque] = {
             cls: deque(maxlen=SMOOTH_WINDOW) for cls in VALID_CLASSES
         }
