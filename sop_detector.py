@@ -13,6 +13,7 @@ Post-Training — Model Nyata (3 Class: kardus, lakban, resi):
 
 import os
 import time
+import threading
 import cv2
 from collections import deque
 from ultralytics import YOLO
@@ -36,12 +37,11 @@ from utils.spatial_filters import (
 CONF_THRESHOLD_LIVE  = 0.25
 CONF_THRESHOLD_VIDEO = 0.25
 
-# Threshold per kelas untuk mode live — dikalibrasi presisi dari data log webcam:
-# Kardus di webcam user berada di rentang conf 0.02 - 0.28 (rata-rata 0.05-0.15)
+# Threshold per kelas untuk mode live — terkalibrasi responsif & stabil:
 CONF_PER_CLASS_LIVE = {
-    "kardus": 0.02,   # Dikalibrasi dari debug log: tangkap seluruh deteksi valid kardus
-    "lakban": 0.18,   # Lakban stabil (di debug mencapai 0.26)
-    "resi":   0.10,   # Resi stabil & toleran
+    "kardus": 0.015,  # Menangkap kardus pada semua orientasi (horizontal/vertikal)
+    "lakban": 0.18,   # Lakban stabil & presisi
+    "resi":   0.10,   # Resi stabil & presisi
 }
 
 # Normalisasi nama kelas dari output raw YOLO → nama standar sistem
@@ -120,7 +120,8 @@ class SOPDetector:
 
         try:
             min_yolo_conf = min(CONF_PER_CLASS_LIVE.values()) if is_live else CONF_THRESHOLD_VIDEO
-            results = self.model(frame, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
+            imgsz = 416 if is_live else 640
+            results = self.model(frame, imgsz=imgsz, conf=min_yolo_conf, iou=0.45, verbose=False)[0]
             for box in results.boxes:
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 conf    = float(box.conf[0])
@@ -138,7 +139,7 @@ class SOPDetector:
 
                 detections.append(([x1, y1, x2, y2], cls_name, conf))
 
-            # Validasi kardus: loloskan kardus berukuran wajar (area >= 2.5% frame, aspect ratio wajar)
+            # Validasi kardus: loloskan kardus berukuran wajar (area >= 2.0% frame, aspect ratio wajar)
             # Kardus asli di kamera user berukuran 12.6% - 25.9%, noise specks < 2.0%
             fh, fw = frame.shape[:2]
             frame_area = max(fh * fw, 1)
@@ -150,9 +151,15 @@ class SOPDetector:
                 if cls_name == "kardus":
                     w = max(x2 - x1, 1)
                     h = max(y2 - y1, 1)
+                    cx = (x1 + x2) / 2
                     area_ratio = (w * h) / frame_area
                     aspect = max(w, h) / min(w, h)
-                    if area_ratio >= 0.025 and aspect <= 4.5:
+
+                    # Anti-face filter: buang box yang menempel di ujung atas tengah (wajah/kepala manusia)
+                    if is_live and (y1 < 0.08 * fh and 0.22 * fw < cx < 0.78 * fw):
+                        continue
+
+                    if area_ratio >= 0.020 and aspect <= 4.5:
                         kardus_dets.append(d)
                 else:
                     other_dets.append(d)
@@ -235,10 +242,37 @@ class SOPDetector:
         tracker = SOPSequenceTracker(debounce_threshold=3, min_duration_seconds=0.4)
 
         # ── Persistent Box & Tracker Cache (Anti-Kedip & Smooth Tracking) ──
-        # Objek yang terdeteksi dipertahankan selama PERSIST_FRAMES (12 frame ≈ 0.4 detik)
-        # agar bounding box stabil di layar tanpa berkedip dan tracker menerima input kontinu.
-        PERSIST_FRAMES = 12
+        PERSIST_FRAMES = 15
         active_cache: dict[str, dict] = {}
+
+        # ── Threaded Background Inference Worker (Decoupled dari GUI Display) ──
+        # Menghilangkan lag & stuttering: GUI camera berjalan di FPS penuh (25-30 FPS),
+        # sementara model YOLO memproses frame secara kontinu di thread terpisah.
+        latest_frame_lock = threading.Lock()
+        latest_frame_copy = None
+        latest_dets_lock  = threading.Lock()
+        shared_detections = []
+        worker_running    = True
+
+        def inference_worker():
+            nonlocal shared_detections
+            while worker_running:
+                frame_to_process = None
+                with latest_frame_lock:
+                    if latest_frame_copy is not None:
+                        frame_to_process = latest_frame_copy
+
+                if frame_to_process is not None:
+                    try:
+                        dets = self.detect_frame(frame_to_process, is_live=True)
+                        with latest_dets_lock:
+                            shared_detections = dets
+                    except Exception:
+                        pass
+                time.sleep(0.005)
+
+        infer_thread = threading.Thread(target=inference_worker, daemon=True)
+        infer_thread.start()
 
         start_time   = time.time()
         frame_idx    = 0
@@ -309,13 +343,16 @@ class SOPDetector:
                 continue
             # ── AKHIR WARMUP ──
 
+            # Kirim salinan frame ke background inference worker
+            with latest_frame_lock:
+                latest_frame_copy = frame.copy()
+
+            # Ambil deteksi terbaru yang dihasilkan inference worker
+            with latest_dets_lock:
+                raw_detections = list(shared_detections)
+
             step1_passed = (tracker.steps[0]["status"] == "PASSED")
-
-            # ── Deteksi + filter dasar (confidence, size, aspect ratio, ROI) ──
-            detections = self.detect_frame(frame, is_live=True)
-
-            # ── Filter spasial kontekstual (lakban/resi harus dekat kardus) ──
-            detections = self.apply_contextual_filter(detections, step1_passed=step1_passed)
+            detections = self.apply_contextual_filter(raw_detections, step1_passed=step1_passed)
 
             # ── Update cache persistensi ──
             for det in detections:
@@ -355,6 +392,7 @@ class SOPDetector:
                 print("[INFO] Pemantauan kamera dihentikan oleh pengguna.")
                 break
 
+        worker_running = False
         cap.release()
         if out:
             out.release()
